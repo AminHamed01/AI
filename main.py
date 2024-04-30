@@ -1,8 +1,10 @@
 import cv2
 import numpy as np
 import sys
+import azure.functions as func
 from ultralytics import YOLO
 from sklearn.cluster import KMeans
+
 
 def get_grass_color(img):
     """
@@ -272,7 +274,6 @@ def annotate_video(video_path, model):
     print("Total passes completed in the video:", passes)
 
 if __name__ == "__main__":
-
     labels = ["Player-L", "Player-R", "GK-L", "GK-R", "Ball", "Main Ref", "Side Ref", "Staff"]
     box_colors = {
         "0": (150, 50, 50),
@@ -287,3 +288,20 @@ if __name__ == "__main__":
     model = YOLO("./weights/last.pt")
     video_path = sys.argv[1]
     annotate_video(video_path, model)
+
+    def main(req: func.HttpRequest) -> func.HttpResponse:
+        try:
+            req_body = req.get_body()
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(req_body)
+
+            model = YOLO("./weights/last.pt")
+            annotate_video(temp_file.name, model)
+
+            with open('./output/' + temp_file.name.split('/')[-1].split('.')[0] + "_out.mp4", "rb") as video_file:
+                video_data = video_file.read()
+
+            return func.HttpResponse(video_data, mimetype="video/mp4", status_code=200)
+
+        except Exception as e:
+            return func.HttpResponse(f"Error: {str(e)}", status_code=500)
