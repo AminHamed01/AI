@@ -1,10 +1,9 @@
 import cv2
 import numpy as np
 import sys
-import azure.functions as func
 from ultralytics import YOLO
 from sklearn.cluster import KMeans
-
+import azure.functions as func
 
 def get_grass_color(img):
     """
@@ -177,30 +176,24 @@ def get_left_team_label(players_boxes, kits_colors, kits_clf):
 
   return left_team_label
 
-def analyze_ball_trajectory(ball_positions):
-    passes = 0
-    for i in range(1, len(ball_positions) - 1):
-        # Calculate the displacement vectors between consecutive frames
-        v1 = np.array(ball_positions[i]) - np.array(ball_positions[i - 1])
-        v2 = np.array(ball_positions[i + 1]) - np.array(ball_positions[i])
-
-        # Calculate the dot product of the vectors
-        dot_product = np.dot(v1, v2)
-
-        # Check if the dot product is negative, indicating a change in direction
-        if dot_product < 0:
-            passes += 1
-
-    return passes
-
 def annotate_video(video_path, model):
+    """
+    Loads the input video and runs the object detection algorithm on its frames, finally it annotates the frame with
+    the appropriate labels
+
+    Args:
+        video_path: String the holds the path of the input video
+        model: Object that represents the trained object detection model
+    Returns:
+    """
     cap = cv2.VideoCapture(video_path)
+
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
     video_name = video_path.split('/')[-1]
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    output_video = cv2.VideoWriter('./output/' + video_name.split('.')[0] + "_out.mp4",
+    output_video = cv2.VideoWriter('./output/'+video_name.split('.')[0] + "_out.mp4",
                                    fourcc,
                                    30.0,
                                    (width, height))
@@ -209,40 +202,33 @@ def annotate_video(video_path, model):
     left_team_label = 0
     grass_hsv = None
 
-    ball_positions = []
-
     while cap.isOpened():
+        # Read a frame from the video
         success, frame = cap.read()
+
         current_frame_idx = cap.get(cv2.CAP_PROP_POS_FRAMES)
         if success:
+
+            # Run YOLOv8 inference on the frame
             annotated_frame = cv2.resize(frame, (width, height))
             result = model(annotated_frame, conf=0.5, verbose=False)[0]
 
+            # Get the players boxes and kit colors
             players_imgs, players_boxes = get_players_boxes(result)
             kits_colors = get_kits_colors(players_imgs, grass_hsv, annotated_frame)
 
+            # Run on the first frame only
             if current_frame_idx == 1:
                 kits_clf = get_kits_classifier(kits_colors)
                 left_team_label = get_left_team_label(players_boxes, kits_colors, kits_clf)
                 grass_color = get_grass_color(result.orig_img)
                 grass_hsv = cv2.cvtColor(np.uint8([[list(grass_color)]]), cv2.COLOR_BGR2HSV)
 
-            ball_detected = False
-            ball_position = None
-
             for box in result.boxes:
                 label = int(box.cls.numpy()[0])
                 x1, y1, x2, y2 = map(int, box.xyxy[0].numpy())
-                if label == 4:
-                    ball_position = [(x1 + x2) // 2, (y1 + y2) // 2]
-                    ball_detected = True
 
-            if ball_detected:
-                ball_positions.append(ball_position)
-
-            for box in result.boxes:
-                label = int(box.cls.numpy()[0])
-                x1, y1, x2, y2 = map(int, box.xyxy[0].numpy())
+                # If the box contains a player, find to which team he belongs
                 if label == 0:
                     kit_color = get_kits_colors([result.orig_img[y1: y2, x1: x2]], grass_hsv)
                     team = classify_kits(kits_clf, kit_color)
@@ -250,11 +236,15 @@ def annotate_video(video_path, model):
                         label = 0
                     else:
                         label = 1
+
+                # If the box contains a Goalkeeper, find to which team he belongs
                 elif label == 1:
                     if x1 < 0.5 * width:
                         label = 2
                     else:
-                        label = 3
+                        gk_label = 3
+
+                # Increase the label by 2 because of the two add labels "Player-L", "GK-L"
                 else:
                     label = label + 2
 
@@ -262,16 +252,16 @@ def annotate_video(video_path, model):
                 cv2.putText(annotated_frame, labels[label], (x1 - 30, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
                             box_colors[str(label)], 2)
 
+            # Write the annotated frame
             output_video.write(annotated_frame)
+
         else:
+            # Break the loop if the end of the video is reached
             break
 
     cv2.destroyAllWindows()
     output_video.release()
     cap.release()
-
-    passes = analyze_ball_trajectory(ball_positions)
-    print("Total passes completed in the video:", passes)
 
 if __name__ == "__main__":
     labels = ["Player-L", "Player-R", "GK-L", "GK-R", "Ball", "Main Ref", "Side Ref", "Staff"]
